@@ -1,0 +1,173 @@
+
+custom:
+  defaultStage: dev
+  prefix: ${self:provider.stage}-${self:custom.stageConfig.service}
+  stageConfig: ${file(./env.${self:provider.stage}.yml)}
+  arnPrefixes:
+    lambda: !Join
+      - ':'
+      - - arn
+        - !Ref AWS::Partition
+        - lambda
+        - !Ref AWS::Region
+        - !Ref AWS::AccountId
+        - function
+    dynamodb: !Join
+      - ':'
+      - - arn
+        - !Ref AWS::Partition
+        - dynamodb
+        - !Ref AWS::Region
+        - !Ref AWS::AccountId
+        - table
+  dynamodbDefaultProperties: &dynamodbDefaultProperties
+    AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+    KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+    BillingMode: PAY_PER_REQUEST
+
+  defaultCorsHeaders:
+    gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+    gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent,GrowSurf-Signature'"
+    gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,OPTIONS'"
+  # END # Default service properties
+
+  optionRequestCorsConfig:
+    origin: '*'
+    headers:
+      - Content-Type
+    allowCredentials: false
+  webpack:
+    keepOutputDirectory: true
+provider:
+  name: aws
+  stage: ${opt:stage, self:custom.defaultStage}
+  region: ${self:custom.stageConfig.region}
+  runtime: nodejs14.x
+  memorySize: 256
+  timeout: 30
+service: ${self:custom.stageConfig.service}-backend
+package:
+  individually: true
+  patterns:
+    - '!./**'
+functions:
+  blog-test:
+    handler: build/routeBlog.handler
+    package:
+      patterns:
+        - build/routeBlog.js
+    timeout: 30
+    events:
+      - http:
+          method: post
+          path: 'blog/{route+}'
+          cors: ${self:custom.optionRequestCorsConfig}
+resources:
+  Resources:
+    IamRoleLambdaExecution:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        Policies:
+        - PolicyName:
+            Fn::Join:
+            - "-"
+            - - ${self:service}
+              - ${self:provider.stage}
+              - lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeStream
+              - dynamodb:PutItem
+              - dynamodb:GetItem
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:ListStreams
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+              - dynamodb:UpdateTimeToLive
+    DynamoBlogTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        <<: *dynamodbDefaultProperties
+        TableName: ${self:custom.prefix}-blog
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: title
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S                        
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+          - AttributeName: 'createdAt'  
+            KeyType: RANGE       
+        GlobalSecondaryIndexes:
+          - IndexName: titleIndex
+            KeySchema:
+              - AttributeName: title
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+    ApiGatewayRestApi:
+      Type: AWS::ApiGateway::RestApi
+      Properties:
+        Name: ${self:custom.prefix}-apiGW
+    GatewayResponseUnauthorized:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        ResponseParameters: ${self:custom.defaultCorsHeaders}
+        ResponseType: UNAUTHORIZED
+        ResponseTemplates:
+          application/json: '{"code":0,"message":$context.error.messageString,"status":401,"requestId":"$context.requestId"}'
+    GatewayResponseDefault400:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        ResponseParameters: ${self:custom.defaultCorsHeaders}
+        ResponseType: DEFAULT_4XX
+        ResponseTemplates:
+          application/json: '{"code":0,"message":$context.error.messageString,"status":400,"requestId":"$context.requestId"}'
+    GatewayResponseDefault500:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        ResponseParameters: ${self:custom.defaultCorsHeaders}
+        ResponseType: DEFAULT_5XX
+        ResponseTemplates:
+          application/json: '{"code":0,"message":$context.error.messageString,"status":500,"requestId":"$context.requestId"}'
+    GatewayResponseAccessDenied:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        ResponseParameters: ${self:custom.defaultCorsHeaders}
+        ResponseType: ACCESS_DENIED
+        ResponseTemplates:
+          application/json: '{"code":0,"message":$context.error.messageString,"status":403,"requestId":"$context.requestId"}'
